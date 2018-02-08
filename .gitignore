@@ -1,0 +1,8 @@
+# build result
+bin/
+
+# object files
+*.o
+
+# temp files
+*.bak

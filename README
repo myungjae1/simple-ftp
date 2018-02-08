@@ -1,0 +1,299 @@
+----------------------------------------
+과제 제목
+----------------------------------------
+Computer Network Assignment: Implementation of FTP server/client
+
+----------------------------------------
+개요
+----------------------------------------
+
+이번 어싸인먼트는 FTP의 서버와 클라이언트의 기본적인 기능을 직접 구현해보는 것이다.
+기본적인 기능이란 USER, PASS, PWD, CDUP, CWD, PASV, LIST, RETR, STOR 등의 FTP 기초 명령어를 말한다.
+추가적으로 서버는 멀티 클라이언트를 지원해야 한다.
+또한 서버와 클라이언트는 REVSTOR, REVRETR라는 새로운 명령어를 지원해야하는데,
+이는 각각 파일의 내용을 거꾸로 보내거나 거꾸로 받는 기능이다.
+
+----------------------------------------
+프로그래밍 환경
+----------------------------------------
+
+운영체제: UNIX (LINUX 혹은 Mac OS X)
+프로그래밍 언어: C
+컴파일러: gcc (OSX의 llvm-gcc보다는 GNU gcc 사용을 권한다)
+
+----------------------------------------
+빌드/실행방법
+----------------------------------------
+
+디렉토리 루트의 Makefile에 빌드를 위한 내용이 모두 들어있다.
+따라서 아래처럼 실행하면 알아서 결과물을 만들어 낸다.
+빌드 결과물(binary)은 bin 디렉토리 안에 만들어진다.
+
+$ make
+
+빌드된 바이너리를 실행하는 방법은 다음과 같다.
+
+** 서버의 경우
+$ bin/ftp_server [port_number]
+
+ftp_server라는 이름의 binary 파일이다.
+1개의 argument를 받는데, 이는 포트 번호이다.
+아무런 argument없이 그냥 실행해도 되며, 이 경우 기본으로 포트 3000을 사용한다.
+서버를 실행하면, 서버로 들어오는 요청과 그에 대해 보내는 응답을 stdout에 출력한다.
+
+** 클라이언트의 경우
+$ bin/ftp_client [server_ip] [server_port]
+
+ftp_client라는 이름의 binary 파일이다.
+2개의 argument를 받으며, 각각 서버의 IP주소와 포트이다. 두 argument 모두 필수이다.
+클라이언트를 실행하면, 사용자의 명령을 stdin을 통해 기다린다.
+이 사용자의 명령은 command 소켓 채널을 통해 서버로 전송된다.
+데이터는 데이터 채널(PASV mode)를 통해 주고받으므로,
+LIST, RETR, STOR, REVRETR, REVSTOR 같은 명령어를 수행하기 전에는
+반드시 PASV 명령어가 선행되어야 한다.
+
+----------------------------------------
+파일/폴더구조
+----------------------------------------
+
+README                  이 파일. 프로젝트에 대한 전반적인 설명
+Makefile                make 명령어를 이용해 빌드할 때 사용하는 파일
+bin/                    빌드 결과물이 생성되는 디렉토리
+client/
+        ftp_client.c    클라이언트 소스코드
+server/
+        ftp_server.c    서버 소스코드
+util/
+        constant.c      자주 사용하는 상수값 혹은 타입 등을 정리하는 파일
+        constant.h
+        socket_util.c   소켓을 열거나 닫고, 소켓을 통해 파일을 보내고 받는 등의 함수들을 정리
+        socket_util.h
+        string_util.c   string에서 특정 토큰을 뽑아내거나, 숫자를 뽑아내는 등 parse를 위한 함수들을 정리
+        string_util.h
+
+----------------------------------------
+중요한 구현 내용
+----------------------------------------
+
+** 서버의 멀티 클라이언트 지원
+
+서버의 멀티 클라이언트 지원을 위해서 fork() 함수를 이용했다.
+fork()는 자식 process를 만드는 함수인데, fork()를 호출한 시점 이후부터
+parent/child process가 나뉘게 된다. 부모 프로세스인 경우, 새로운 연결을
+받을 때마다, 새로운 자식 프로세스를 생성하는 일만 한다.
+실제 클라이언트 요청을 처리하는 것은 자식 프로세스가 하도록 구현되어 있다.
+해당 코드는 server/ftp_server.c 에 있으며, 다음과 같다.
+
+    // to handle multiple clients
+    int pid = fork();
+    if(pid > 0) // main process
+    {
+      close_socket(&client_sock);
+    }
+    else if(pid == 0) // child process
+    {
+      close_socket(&listen_sock);
+      handle_client(client_sock, client_addr);
+    }
+    else // fork error
+    {
+      printf("fork error");
+      exit(1);
+    }
+
+
+** REVSTOR, REVRETR 커맨드 구현
+
+각 명령어의 기능은 다음과 같다.
+REVSTOR: 클라이언트가 서버로 파일을 전송할 때, 역순으로 전송한다.
+REVRETR: 서버가 클라이언트로 파일을 전송할 때, 역순으로 전송한다.
+
+즉 파일을 '전송할 때'의 순서만 고려하면 된다.
+전송하는 주체가 서버인지, 클라이언트인지는 중요하지 않다.
+해당 기능은 서버와 클라이언트가 함께 쓸 수 있도록
+util/socket_util.c 내에 send_file() 함수에 구현되어 있다.
+
+함수의 파라미터로 넘겨받은 reverse 값이 true인 경우, 파일을 역순으로 전송한다.
+먼저 파일의 크기를 알아낸 후, 임시 버퍼에 파일의 전체 내용을 읽어들인다.
+그 후, EOF를 제외한 파일의 내용을 거꾸로 뒤집는다. 뒤집는 방법은 다음과 같다.
+파일 사이즈를 file_size라고 하면,
+버퍼의 0번째 index의 값은 (file_size - 1)번째 index의 값과 서로 바뀌어야 하며,
+버퍼의 1번째 index의 값은 (file_size - 2)번째 index의 값과 서로 바뀌어야 한다.
+나머지 index도 마찬가지다.
+
+코드는 다음과 같다.
+
+    if(reverse)
+    {
+      // get the size of file
+      fseek(file, 0, SEEK_END);
+      long file_size = ftell(file);
+
+      // go to the front of file after getting the size of file
+      fseek(file, 0, SEEK_SET);
+
+      // read file contents
+      char* buffer = malloc(file_size * sizeof(char));
+      fread(buffer, sizeof(char), file_size, file);
+
+      // reverse file contents
+      int mirror_index;
+      char temp;
+      long i;
+      for(i = 0 ; i < file_size/2 ; i++)
+      {
+        mirror_index = (file_size - 1) - i;
+
+        temp = buffer[i];
+        buffer[i] = buffer[mirror_index];
+        buffer[mirror_index] = temp;
+      }
+
+      // send reversed file
+      write(*data_sockfd, buffer, file_size);
+
+      free(buffer);
+    }
+
+----------------------------------------
+구현 내용
+----------------------------------------
+
+
+  ** 소켓 프로그래밍
+
+이번 어싸인먼트를 하기 위해서는 기본적인 소켓 프로그래밍 방법을 알아야 한다.
+UNIX에서는 모든 것을 파일로 다루므로, 소켓도 결국은 파일의 일종이라고 볼 수 있다.
+개념적으로, 소켓이라는 '파일'에서 원하는 내용을 쓰거나 읽는 방식이다.
+소켓관련 함수를 사용하기 위해서는 먼저 필요한 헤더를 인클루드해야 한다.
+
+    #include <sys/socket.h>
+
+소켓을 생성하려면 다음과 같은 함수를 호출한다.
+위에서 말했듯이, 소켓도 파일로 다루므로 리턴값은 file descriptor이다.
+
+    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+
+이렇게 생성한 소켓 file descriptor를 이용해서, 특정 포트에 bind시키거나
+listen, accept 등의 작업을 할 수 있다. 또한 다른 소켓에 연결시키는 connect를
+호출할 수도 있다. 이 sockfd라는 '파일'에다가 write를 호출하면, 소켓을 통해
+데이터가 전송된다. 마찬가지로 sockfd라는 '파일'에다가 read를 호출하면, 소켓을 통해
+데이터를 전달받을 수 있다.
+
+
+
+
+
+  ** 시스템 콜
+
+시스템 콜이란, 어플리케이션에서 시스템으로(운영체제 혹은 커널) 어떤 작동을
+요청하는 것이라고 할 수 있다. 커널에서 지원하는 기능인 경우, 어플리케이션에서
+직접 해당 기능을 구현할 필요없이, 커널에 요청하면 된다.
+C언어의 경우, system() 함수를 이용해서 시스템 콜을 할 수 있다.
+
+이번 어싸인먼트에서 FTP 서버의 경우, 시스템 콜을 종종 사용할 일이 있다.
+예를 들어 LIST 명령의 경우, 현재 디렉토리 내 파일/디렉토리 목록을 전달해야 한다.
+또한 PWD는 현재 디렉토리 주소를 리턴해야 하며,
+CDUP이나 CWD는 현재 디렉토리를 다른 곳으로 변경하는 명령이다.
+
+나는 system() 함수를 사용하지는 않았다.
+LIST 명령의 경우에는 popen()을 통해 파이프로 구현했다.
+popen()이 system()을 이용하는 것보다 조금 더 깔끔하게 구현 가능하다.
+코드는 아래와 같다.
+
+    memset(list_data, 0, sizeof(list_data)); // initialize buffer
+    getcwd(current_path, sizeof(current_path));
+    snprintf(list_command, MAX_BUF_SIZE, "ls -l %s", current_path);
+    if((pipe_fp = popen(list_command, "r")) == NULL)
+    {
+      send_to_socket(&sockfd, server_response_451);
+      return 1;
+    }
+    fread(list_data, MAX_BUF_SIZE * 10, 1, pipe_fp);
+    pclose(pipe_fp);
+
+PWD 명령의 경우에는 getcwd()라는 POSIX 라이브러리를 이용했다.
+마찬가지로 system()을 직접 호출하는 것보다 훨씬 깔끔하다.
+코드는 아래와 같다.
+
+    getcwd(current_path, sizeof(current_path));
+
+CWD, CDUP 명령의 경우에는 둘다 chdir()이라는 POSIX 라이브러리를 이용했다.
+이 또한 마찬가지로, system()을 직접 호출하는 것보다 훨씬 깔끔하다.
+코드는 아래와 같다.
+
+    chdir(".."); // CDUP 의 경우
+    chdir(path); // CWD  의 경우
+
+
+
+
+
+  ** 데이터 채널(PASV mode)
+
+FTP에는 Passive Mode라는 것이 있다. PASV 명령어를 통해 이 passive mode를
+사용할 수 있다. 서버와 클라이언트가 서로 연결하는 채널이 2개가
+되는 것인데, 그중 1개는 명령어와 그에 대한 서버 응답메시지가 오가는 채널이고,
+나머지 1개는 클라이언트의 요청에 대한 데이터가 오가는 채널이다.
+
+대표적으로 LIST, RETR, STOR 명령어가 데이터 채널을 이용한다.
+따라서 위 명령어들은 반드시 PASV 명령어가 선행되어야 한다.
+이번 과제에서 구현한 REVRETR, REVSTOR 명령어 또한 데이터 채널을 이용한다.
+
+PASV 명령을 받으면, 서버는 데이터 채널을 위한 소켓을 새로 생성해서
+이곳으로 클라이언트가 연결하길 기다려야 한다. 서버는 PASV 명령에 대한
+응답으로 데이터 채널의 IP와 포트 번호를 보낸다. 클라이언트는 이 응답을
+이용해서 서버의 데이터 채널 소켓에 연결한다. 데이터 전송이 끝나면
+이 소켓을 닫는다. PASV 명령에 대한 응답 포맷은 아래와 같다.
+
+    "227 Entering Passive Mode (%ld,%ld,%ld,%ld,%d,%d).\r\n";
+
+괄호에서 앞의 4개 숫자는 IP를 구성하는 각 숫자이고,
+마지막 2개의 숫자는 각각 포트번호의 upper 8 bit, lower 8 bit이다.
+따라서 (a,b,c,d,e,f) 라는 응답을 받았을 경우,
+IP주소는 a.b.c.d 이고, 포트 번호는 (256 * e) + f 이다.
+포트 번호는 사용 가능한 것 중에서 랜덤으로 선택한다.
+
+포트 번호 랜덤 선택은 bind()로 테스트를 해보고, 되면 통과시키고
+안되면 다시 선택한다. 코드는 아래와 같다.
+
+    // until finding a port which is not being used
+    int data_transfer_port;
+    while(1)
+    {
+      data_transfer_port = (rand() % 40000) + 1024; // between 1024 ~ 39999
+      data_transfer_addr.sin_port = htons(data_transfer_port);
+
+      if(bind(data_transfer_sock, (struct sockaddr*) &data_transfer_addr, sizeof(struct sockaddr_in)) >= 0)
+      {
+        break;
+      }
+    }
+
+응답 메시지를 구하는 로직은 아래와 같다.
+
+    struct sockaddr_in server_addr;
+    unsigned int server_addr_length = sizeof(server_addr);
+    getsockname(sockfd, (struct sockaddr*) &server_addr, &server_addr_length);
+
+    long ip = inet_addr(inet_ntoa(server_addr.sin_addr));
+    int data_transfer_port_upper_8bit = data_transfer_port / 256;
+    int data_transfer_port_lower_8bit = data_transfer_port % 256;
+
+    char response_message[MAX_BUF_SIZE];
+    memset(response_message, 0, sizeof(response_message));
+    snprintf(response_message, MAX_BUF_SIZE, server_response_227,
+             ip&0xff, ip>>8&0xff, ip>>16&0xff, ip>>24&0xff,
+             data_transfer_port_upper_8bit, data_transfer_port_lower_8bit);
+
+위에서 설명했던 대로, 데이터 채널의 IP(서버의 IP)와 데이터 채널에 사용할
+포트 번호를 응답으로 보낸다. IP는 getsockname() 함수를 통해 조회한다.
+포트 번호는 랜덤으로 생성한다.
+
+----------------------------------------
+비고
+----------------------------------------
+
+** 이력관리
+
+git을 통해 이력관리가 되어있다.
